@@ -20,6 +20,7 @@ else:
     feats = feats.get('features', feats) if isinstance(feats, dict) else feats
     for i, f in enumerate(feats):
         f.setdefault('id', 'f%03d' % i)
+feats = [f for f in feats if not f.get('suggested')]   # unaccepted suggestions stay out of the build
 feats.sort(key=lambda f: f['order'])
 C = (Align.MIN, Align.MIN, Align.MIN)
 MIN_OVERLAP = 1.0   # mm^2; smaller overlaps are drawing slop, not features

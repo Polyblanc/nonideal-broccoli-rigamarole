@@ -63,6 +63,15 @@ textarea{font-family:var(--f-body);resize:vertical;min-height:52px}
 .btn.danger{color:var(--cut);border-color:color-mix(in srgb,var(--cut) 50%,var(--line))}
 .help{font-size:.85rem;color:var(--muted);margin:0;max-width:70ch}
 .help b{color:var(--ink);font-weight:500}
+.score{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;font:12px var(--f-mono);font-variant-numeric:tabular-nums}
+.score b{font:700 1rem var(--f-display);letter-spacing:.02em}
+.legend{display:inline-flex;align-items:center;gap:6px;color:var(--muted)}
+.legend i{display:inline-block;width:90px;height:8px;border-radius:2px;background:linear-gradient(90deg,#2b5fb8,#f4f4f4 50%,#c8323c)}
+.prof{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px;display:grid;gap:4px}
+.prof canvas{height:170px}
+.prof .k{display:flex;gap:14px;font:12px var(--f-mono);color:var(--muted);flex-wrap:wrap}
+.prof .k span::before{content:"";display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:5px;background:var(--c)}
+.chip.sug{background:transparent;color:var(--sel);border:1px solid var(--sel)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 
@@ -79,6 +88,7 @@ textarea{font-family:var(--f-body);resize:vertical;min-height:52px}
         <button id="t-sel" data-tool="select" aria-pressed="false">Select</button>
         <button id="t-box" data-tool="box" aria-pressed="false">Box</button>
         <button id="t-cyl" data-tool="cyl" aria-pressed="false">Circle</button>
+        <button id="t-sec" data-tool="section" aria-pressed="false">Section</button>
       </div>
       <div class="seg op" role="group" aria-label="New shapes">
         <button id="o-add" data-op="add" aria-pressed="true">Add</button>
@@ -87,6 +97,7 @@ textarea{font-family:var(--f-body);resize:vertical;min-height:52px}
       <div class="seg" role="group" aria-label="Background">
         <button id="v-tex" data-view="tex" aria-pressed="true">Photo</button>
         <button id="v-h" data-view="h" aria-pressed="false">Height</button>
+        <button id="v-dev" data-view="dev" aria-pressed="false">Deviation</button>
       </div>
       <div class="seg" role="group" aria-label="Zoom">
         <button id="z-in" aria-label="Zoom in">+</button>
@@ -95,7 +106,9 @@ textarea{font-family:var(--f-body);resize:vertical;min-height:52px}
       </div>
     </div>
     <div class="cv" id="cv"><canvas id="c"></canvas><div class="readout" id="ro">x — y — z —</div></div>
-    <p class="help"><b>Pan</b> drags the view; pinch or scroll to zoom. <b>Box</b> and <b>Circle</b> draw a new feature as Add or Cut, and its height is fitted from the scan inside the shape. <b>Select</b> picks a feature: drag it to move, drag its yellow corner to resize, or type exact numbers in the panel. Features build in list order, so a cut only removes what is above it in the list.</p>
+    <div class="score" id="score"><span>Model vs scan</span><b id="sc1">—</b><span>within 1 mm</span><b id="sc2">—</b><span>within 2 mm</span><span class="legend">model lower <i></i> model higher (±3 mm)</span></div>
+    <div class="prof" id="prof" hidden><div class="k"><span style="--c:var(--muted)">scan</span><span style="--c:var(--accent)">model</span><span id="pk"></span></div><canvas id="pc"></canvas></div>
+    <p class="help"><b>Pan</b> drags the view; pinch or scroll to zoom. <b>Box</b> and <b>Circle</b> draw a new feature as Add or Cut, and its height is fitted from the scan inside the shape. <b>Section</b> draws a line and plots scan and model heights along it. <b>Deviation</b> colours the board by model minus scan and updates as you edit. <b>Select</b> picks a feature: drag it to move, drag its yellow corner to resize, or type exact numbers in the panel. Features build in list order, so a cut only removes what is above it in the list.</p>
     <div class="status" id="st">Connecting to saved features…</div>
   </section>
 
@@ -122,6 +135,7 @@ textarea{font-family:var(--f-body);resize:vertical;min-height:52px}
         <label for="f-z0">z bottom<input id="f-z0" type="number" step="0.1" inputmode="decimal"></label>
         <label for="f-z1">z top<input id="f-z1" type="number" step="0.1" inputmode="decimal"></label>
       </div>
+      <div class="acts" id="sug-acts" hidden><button class="btn primary" id="b-accept">Accept suggestion</button><button class="btn danger" id="b-discard">Discard</button></div>
       <div class="stats" id="stats"></div>
       <div class="acts">
         <button class="btn" id="b-fit-med">Top = median</button>
@@ -136,7 +150,8 @@ textarea{font-family:var(--f-body);resize:vertical;min-height:52px}
       </div>
     </div>
     <div class="ed" style="border-top:1px solid var(--line)">
-      <div class="acts"><button class="btn" id="b-copy">Copy all as JSON</button></div>
+      <div class="acts"><button class="btn primary" id="b-suggest">Suggest fixes</button><button class="btn" id="b-copy">Copy all as JSON</button></div>
+      <p class="help" style="margin:0">Suggest fixes proposes boxes where the model is more than 1.5 mm off the scan. Suggestions are dashed and left out of the build until you accept them; running it again replaces the ones you have not accepted.</p>
       <p class="help" style="margin:0">Your features save automatically. When you're done, tell Claude in chat and it rebuilds the STEP from them.</p>
     </div>
   </aside>
@@ -179,7 +194,7 @@ let db=null, coll=null, saving=false;
 const cv=document.getElementById('c'), box=document.getElementById('cv'), ctx=cv.getContext('2d');
 let W=0,H=0,dpr=1, s=4, ox=0, oy=0;     // screen = (x-META.x0)*s+ox, (META.y1-y)*s+oy
 
-function fit(){const pad=16;s=Math.min((W-2*pad)/(META.x1-META.x0),(H-2*pad)/(META.y1-META.y0));
+function fit(){const pad=16;if(W<2*pad+10||H<2*pad+10)return;s=Math.min((W-2*pad)/(META.x1-META.x0),(H-2*pad)/(META.y1-META.y0));
   ox=(W-(META.x1-META.x0)*s)/2; oy=(H-(META.y1-META.y0)*s)/2; draw()}
 function resize(){const r=box.getBoundingClientRect();dpr=window.devicePixelRatio||1;W=r.width;H=r.height;
   cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);ctx.setTransform(dpr,0,0,dpr,0,0)}
@@ -192,6 +207,7 @@ function draw(){
   const [ax,ay]=toS(META.x0,META.y1),[bx,by]=toS(META.x1,META.y0);
   ctx.imageSmoothingEnabled=view==='tex';
   if(view==='tex'&&tex.complete)ctx.drawImage(tex,ax,ay,bx-ax,by-ay); else if(view==='h')ctx.drawImage(hImg,ax,ay,bx-ax,by-ay);
+  else if(view==='dev'){if(tex.complete){ctx.globalAlpha=.35;ctx.drawImage(tex,ax,ay,bx-ax,by-ay);ctx.globalAlpha=1}ctx.imageSmoothingEnabled=false;ctx.drawImage(devImg,ax,ay,bx-ax,by-ay)}
   // 10 mm grid
   ctx.lineWidth=1;ctx.strokeStyle='rgba(127,140,155,.28)';ctx.beginPath();
   for(let x=Math.ceil(META.x0/10)*10;x<=META.x1;x+=10){const[px]=toS(x,0);ctx.moveTo(px,ay);ctx.lineTo(px,by)}
@@ -200,7 +216,8 @@ function draw(){
   const ordered=[...feats].sort((a,b)=>a.order-b.order);
   for(const f of ordered){const sel=f.id===selId,col=css(f.op==='cut'?'--cut':'--add');
     ctx.fillStyle=col+(sel?'55':'2e');ctx.strokeStyle=sel?css('--sel'):col;ctx.lineWidth=sel?2.5:1.5;
-    ctx.setLineDash(f.op==='cut'?[6,4]:[]);ctx.beginPath();
+    if(f.suggested){ctx.strokeStyle=css('--sel');ctx.fillStyle='rgba(0,0,0,0)'}
+    ctx.setLineDash(f.suggested?[2,3]:f.op==='cut'?[6,4]:[]);ctx.beginPath();
     if(f.kind==='cyl'){const[cx,cy]=toS(f.cx,f.cy);ctx.arc(cx,cy,f.r*s,0,Math.PI*2)}
     else{const[x0,x1,y0,y1]=bounds(f);const[p,q]=toS(x0,y1),[u,v]=toS(x1,y0);ctx.rect(p,q,u-p,v-q)}
     ctx.fill();ctx.stroke();ctx.setLineDash([]);
@@ -208,6 +225,8 @@ function draw(){
   if(drag&&drag.mode==='new'){const f=drag.f;ctx.strokeStyle=css('--sel');ctx.lineWidth=2;ctx.beginPath();
     if(f.kind==='cyl'){const[cx,cy]=toS(f.cx,f.cy);ctx.arc(cx,cy,f.r*s,0,Math.PI*2)}else{const[x0,x1,y0,y1]=bounds(f);const[p,q]=toS(x0,y1),[u,v]=toS(x1,y0);ctx.rect(p,q,u-p,v-q)}
     ctx.stroke()}
+  if(section){const[p,q]=toS(section.x0,section.y0),[u,v]=toS(section.x1,section.y1);ctx.strokeStyle=css('--sel');ctx.lineWidth=2;ctx.setLineDash([]);
+    ctx.beginPath();ctx.moveTo(p,q);ctx.lineTo(u,v);ctx.stroke();ctx.fillStyle=css('--sel');ctx.beginPath();ctx.arc(p,q,4,0,7);ctx.arc(u,v,4,0,7);ctx.fill()}
 }
 function handle(f){if(f.kind==='cyl')return toS(f.cx+f.r,f.cy);const[,x1,y0]=bounds(f);return toS(x1,y0)}
 tex.onload=draw;
@@ -223,6 +242,7 @@ cv.addEventListener('pointerdown',e=>{cv.setPointerCapture(e.pointerId);pts.set(
   if(tool==='select'){const cur=feats.find(f=>f.id===selId);
     if(cur){const h=handle(cur);if(Math.abs(e.offsetX-h[0])<14&&Math.abs(e.offsetY-h[1])<14){drag={mode:'resize',f:cur,orig:{...cur}};return}}
     const f=hit(x,y);select(f?f.id:null);if(f)drag={mode:'move',f,orig:{...f},x,y};else drag={mode:'pan',sx:e.offsetX,sy:e.offsetY,ox,oy};return}
+  if(tool==='section'){section={x0:r1(x),y0:r1(y),x1:r1(x),y1:r1(y)};drag={mode:'section'};return}
   const f=tool==='box'?{kind:'box',op:newOp,x0:r1(x),x1:r1(x),y0:r1(y),y1:r1(y)}:{kind:'cyl',op:newOp,cx:r1(x),cy:r1(y),r:0};
   drag={mode:'new',f,x,y}});
 cv.addEventListener('pointermove',e=>{
@@ -234,6 +254,7 @@ cv.addEventListener('pointermove',e=>{
     ox=m[0]-(pinch.m[0]-pinch.ox)*kk;oy=m[1]-(pinch.m[1]-pinch.oy)*kk;draw();return}
   if(!drag)return;
   if(drag.mode==='pan'){ox=drag.ox+e.offsetX-drag.sx;oy=drag.oy+e.offsetY-drag.sy}
+  else if(drag.mode==='section'){section.x1=r1(x);section.y1=r1(y);drawProfile()}
   else if(drag.mode==='new'){const f=drag.f;if(f.kind==='box'){f.x1=r1(x);f.y1=r1(y)}else f.r=r2(Math.hypot(x-f.cx,y-f.cy))}
   else if(drag.mode==='move'){const dx=r1(x-drag.x),dy=r1(y-drag.y),f=drag.f,o=drag.orig;
     if(f.kind==='cyl'){f.cx=r1(o.cx+dx);f.cy=r1(o.cy+dy)}else{f.x0=r1(o.x0+dx);f.x1=r1(o.x1+dx);f.y0=r1(o.y0+dy);f.y1=r1(o.y1+dy)}fillEditor()}
@@ -258,7 +279,7 @@ function nextName(f){const n=feats.filter(g=>g.kind===f.kind&&g.op===f.op).lengt
   return (f.op==='cut'?(f.kind==='cyl'?'Hole ':'Pocket '):(f.kind==='cyl'?'Cylinder ':'Plane '))+n}
 async function create(f){f.label=nextName(f);f.note='';f.source='you';f.order=Date.now();
   f.id='f'+f.order.toString(36)+Math.random().toString(36).slice(2,6);feats.push(f);select(f.id);await save(f)}
-function clean(f){const o={kind:f.kind,op:f.op,z0:f.z0,z1:f.z1,label:f.label||'',note:f.note||'',order:f.order,source:f.source||'you'};
+function clean(f){const o={kind:f.kind,op:f.op,z0:f.z0,z1:f.z1,label:f.label||'',note:f.note||'',order:f.order,source:f.source||'you',suggested:!!f.suggested};
   if(f.kind==='cyl')Object.assign(o,{cx:f.cx,cy:f.cy,r:f.r});else Object.assign(o,{x0:f.x0,x1:f.x1,y0:f.y0,y1:f.y1});return o}
 const writing=new Map();
 async function save(f){if(!coll){local();return}
@@ -273,18 +294,19 @@ function status(t,warn){const el=document.getElementById('st');el.textContent=t;
 // ---------- list + editor ----------
 function render(){const list=document.getElementById('list');const o=[...feats].sort((a,b)=>a.order-b.order);
   document.getElementById('cnt').textContent=o.length+(o.length===1?' feature':' features');
-  if(!o.length){list.innerHTML='<div class="empty">No features yet. Pick Box or Circle and drag on the board to mark the first one.</div>';draw();return}
+  if(!o.length){list.innerHTML='<div class="empty">No features yet. Pick Box or Circle and drag on the board to mark the first one.</div>';recompute();draw();return}
+  recompute();
   list.innerHTML='';o.forEach((f,i)=>{const r=document.createElement('div');r.className='row';r.setAttribute('role','option');r.setAttribute('aria-selected',f.id===selId);r.tabIndex=0;
     const n=document.createElement('span');n.className='n';n.textContent=i+1;
     const nm=document.createElement('span');nm.className='nm';nm.textContent=(f.label||'(unnamed)')+(f.kind==='cyl'?' ⌀'+r1(2*f.r):'')+' · z '+(f.z0??'?')+'–'+(f.z1??'?');
-    const c=document.createElement('span');c.className='chip '+f.op;c.textContent=f.op;
+    const c=document.createElement('span');c.className='chip '+(f.suggested?'sug':f.op);c.textContent=f.suggested?'suggested '+f.op:f.op;
     r.append(n,nm,c);r.onclick=()=>select(f.id);r.onkeydown=e=>{if(e.key==='Enter')select(f.id)};list.append(r)});
   draw()}
 const $=id=>document.getElementById(id);
 function select(id){selId=id;fillEditor();render()}
 function fillEditor(){const f=feats.find(g=>g.id===selId);$('ed').hidden=!f;if(!f)return;
   $('f-label').value=f.label||'';$('f-op').value=f.op;$('f-note').value=f.note||'';
-  $('g-box').hidden=f.kind!=='box';$('g-cyl').hidden=f.kind!=='cyl';
+  $('sug-acts').hidden=!f.suggested;$('g-box').hidden=f.kind!=='box';$('g-cyl').hidden=f.kind!=='cyl';
   if(f.kind==='box'){$('f-x0').value=f.x0;$('f-x1').value=f.x1;$('f-y0').value=f.y0;$('f-y1').value=f.y1}else{$('f-cx').value=f.cx;$('f-cy').value=f.cy;$('f-r').value=f.r}
   $('f-z0').value=f.z0??'';$('f-z1').value=f.z1??'';
   const st=statsIn(f);$('stats').textContent=st?`scan inside: min ${st.min.toFixed(1)} · median ${st.median.toFixed(1)} · mean ${st.mean.toFixed(1)} · 90% ${st.p90.toFixed(1)} · max ${st.max.toFixed(1)} mm`:'outside the scan';
@@ -303,6 +325,82 @@ $('b-up').onclick=()=>move(-1);$('b-down').onclick=()=>move(1);
 $('b-copy').onclick=async()=>{const txt=JSON.stringify([...feats].sort((a,b)=>a.order-b.order).map(clean),null,1);
   try{await navigator.clipboard.writeText(txt);status('Copied '+feats.length+' features. Paste them into the chat.')}catch(_){
     const ta=document.createElement('textarea');ta.value=txt;ta.style.cssText='width:100%;height:120px';$('st').replaceChildren(ta);ta.select()}};
+
+// ---------- model raster (2.5D top surface, same rules as the build script) ----------
+const NW=META.hW, NH=META.hH, ST=META.hStep, N=NW*NH;
+const SCAN=new Float32Array(N); for(let k=0;k<N;k++)SCAN[k]=HRAW[k]/100;
+let TOP=new Float32Array(N), section=null;
+const devImg=document.createElement('canvas'); devImg.width=NW; devImg.height=NH;
+function cells(f){const[a,b,c,d]=bounds(f);const out=[];
+  const i0=Math.max(0,Math.floor((a-META.x0)/ST)),i1=Math.min(NW-1,Math.floor((b-META.x0)/ST));
+  const j0=Math.max(0,Math.floor((META.y1-d)/ST)),j1=Math.min(NH-1,Math.floor((META.y1-c)/ST));
+  for(let j=j0;j<=j1;j++){const y=META.y1-(j+.5)*ST;for(let i=i0;i<=i1;i++){const x=META.x0+(i+.5)*ST;
+    if(f.kind==='cyl'?((x-f.cx)**2+(y-f.cy)**2<=f.r*f.r):(x>=a&&x<=b&&y>=c&&y<=d))out.push(j*NW+i)}}return out}
+function median(idx){if(!idx.length)return null;const v=idx.map(k=>SCAN[k]).sort((a,b)=>a-b);return v[v.length>>1]}
+const isComp=f=>f.op==='add'&&f.z0>=4.9&&(f.label||'').trim().toLowerCase()!=='heatsink';
+const MINC=Math.ceil(1/(ST*ST));   // 1 mm^2 of cells
+function modelTop(list){
+  const top=new Float32Array(N);const act=list.filter(f=>!f.suggested).sort((a,b)=>a.order-b.order);
+  const comp=act.filter(isComp);const C=new Map(comp.map(f=>[f.id,cells(f)]));
+  const who=new Map();for(const f of comp)for(const k of C.get(f.id)){const w=who.get(k);if(w)w.push(f.id);else who.set(k,[f.id])}
+  const groups=new Map();for(const[k,w]of who)if(w.length>1){const key=w.join('|');(groups.get(key)||groups.set(key,[]).get(key)).push(k)}
+  const overl=new Set();for(const[key,ks]of groups)if(ks.length>=MINC)key.split('|').forEach(i=>overl.add(i));
+  const own=new Map();for(const f of comp){let z=f.z1;if(overl.has(f.id)){const ex=C.get(f.id).filter(k=>who.get(k).length===1);if(ex.length>=MINC)z=median(ex)}own.set(f.id,Math.max(z,f.z0+.1))}
+  const gTop=new Map();for(const[key,ks]of groups){const ids=key.split('|');
+    gTop.set(key,ks.length>=MINC?Math.max(median(ks),Math.max(...ids.map(i=>comp.find(f=>f.id===i).z0))+.1):Math.max(...ids.map(i=>own.get(i))))}
+  let compDone=false;
+  for(const f of act){
+    if(isComp(f)){if(compDone)continue;compDone=true;
+      for(const[k,w]of who){const z=w.length===1?own.get(w[0]):gTop.get(w.join('|'));if(z>top[k])top[k]=z}continue}
+    const ks=cells(f);
+    if(f.op==='add'){for(const k of ks)if(f.z1>top[k])top[k]=f.z1}
+    else{for(const k of ks)if(top[k]>f.z0+1e-6&&f.z1>=top[k]-1e-6)top[k]=f.z0}}
+  return top}
+function recompute(){TOP=modelTop(feats);
+  const ctx2=devImg.getContext('2d');const id=ctx2.createImageData(NW,NH);let n=0,a1=0,a2=0;
+  for(let k=0;k<N;k++){const s=SCAN[k],m=TOP[k];if(s<1&&m<1)continue;const d=m-s;n++;if(Math.abs(d)<1)a1++;if(Math.abs(d)<2)a2++;
+    const t=Math.max(-1,Math.min(1,d/3));const lo=[43,95,184],mid=[244,244,244],hi=[200,50,60];const c=t<0?lo:hi,u=Math.abs(t);
+    for(let q=0;q<3;q++)id.data[k*4+q]=mid[q]+(c[q]-mid[q])*u;id.data[k*4+3]=Math.abs(d)<.25?60:235}
+  ctx2.putImageData(id,0,0);
+  $('sc1').textContent=n?Math.round(100*a1/n)+'%':'—';$('sc2').textContent=n?Math.round(100*a2/n)+'%':'—';drawProfile()}
+function topAt(x,y){const i=Math.floor((x-META.x0)/ST),j=Math.floor((META.y1-y)/ST);return(i<0||j<0||i>=NW||j>=NH)?null:TOP[j*NW+i]}
+
+// ---------- section profile ----------
+function drawProfile(){const box2=$('prof');if(!section){box2.hidden=true;return}box2.hidden=false;
+  const pc=$('pc'),r=pc.getBoundingClientRect(),dp=window.devicePixelRatio||1;pc.width=Math.round(r.width*dp);pc.height=Math.round(r.height*dp);
+  const g=pc.getContext('2d');g.setTransform(dp,0,0,dp,0,0);const w=r.width,h=r.height,L=Math.hypot(section.x1-section.x0,section.y1-section.y0);
+  g.clearRect(0,0,w,h);if(L<.5)return;
+  const n=Math.max(2,Math.round(L/.25)),S=[],M=[];for(let k=0;k<=n;k++){const t=k/n,x=section.x0+(section.x1-section.x0)*t,y=section.y0+(section.y1-section.y0)*t;S.push(hAt(x,y));M.push(topAt(x,y))}
+  const zmax=Math.max(6,...S.filter(v=>v!=null),...M.filter(v=>v!=null))*1.08;const pl=34,pb=18,pt=6,pr=6;
+  const X=d=>pl+(w-pl-pr)*d/L,Y=z=>pt+(h-pt-pb)*(1-z/zmax);
+  g.font='11px '+css('--f-mono');g.fillStyle=css('--muted');g.strokeStyle=css('--line');g.lineWidth=1;
+  const zs=zmax>20?10:zmax>10?5:2;for(let z=0;z<=zmax;z+=zs){g.beginPath();g.moveTo(pl,Y(z));g.lineTo(w-pr,Y(z));g.stroke();g.fillText(z,4,Y(z)+4)}
+  const ds=L>100?20:L>40?10:L>15?5:1;for(let d=0;d<=L;d+=ds)g.fillText(d,X(d)-4,h-4);
+  const line=(arr,col,wd)=>{g.strokeStyle=col;g.lineWidth=wd;g.beginPath();let on=false;arr.forEach((z,k)=>{if(z==null){on=false;return}const px=X(L*k/n),py=Y(z);on?g.lineTo(px,py):g.moveTo(px,py);on=true});g.stroke()};
+  line(S,css('--muted'),1.5);line(M,css('--accent'),2);
+  $('pk').textContent=`(${section.x0}, ${section.y0}) → (${section.x1}, ${section.y1}) · ${L.toFixed(1)} mm`}
+
+// ---------- suggestions ----------
+function largestRect(mask){let best=null,bestA=0;const hgt=new Int32Array(NW);
+  for(let j=0;j<NH;j++){for(let i=0;i<NW;i++)hgt[i]=mask[j*NW+i]?hgt[i]+1:0;const st=[];
+    for(let i=0;i<=NW;i++){const cur=i<NW?hgt[i]:0;let start=i;while(st.length&&st[st.length-1][1]>=cur){const[s0,hh]=st.pop();const a=hh*(i-s0);if(a>bestA){bestA=a;best={i0:s0,i1:i,j0:j-hh+1,j1:j+1}}start=s0}st.push([start,cur])}}
+  return best?Object.assign(best,{area:bestA}):null}
+async function suggest(){
+  for(const f of feats.filter(f=>f.suggested))await remove(f);
+  const top=modelTop(feats);let made=0;const base=Date.now();
+  for(const kind of ['add','cut']){const mask=new Uint8Array(N);
+    for(let k=0;k<N;k++){const d=top[k]-SCAN[k];mask[k]=kind==='add'?(SCAN[k]>1&&d<-1.5):(top[k]>5.2&&d>1.5)}
+    for(let n=0;n<8;n++){const r=largestRect(mask);if(!r||r.area*ST*ST<20)break;const ks=[];
+      for(let j=r.j0;j<r.j1;j++)for(let i=r.i0;i<r.i1;i++){ks.push(j*NW+i);mask[j*NW+i]=0}
+      const sv=ks.map(k=>SCAN[k]).sort((a,b)=>a-b),tv=ks.map(k=>top[k]).sort((a,b)=>a-b),md=a=>a[a.length>>1];
+      const f={kind:'box',op:kind,x0:r1(META.x0+r.i0*ST),x1:r1(META.x0+r.i1*ST),y0:r1(META.y1-r.j1*ST),y1:r1(META.y1-r.j0*ST),
+        z0:kind==='add'?r1(md(tv)):r1(md(sv)),z1:kind==='add'?r1(md(sv)):r1(tv[tv.length-1]+1),
+        label:'Suggested '+(kind==='add'?'add ':'cut ')+(n+1),note:'',source:'claude',suggested:true,order:base+made};
+      if(f.z1<=f.z0+.2)continue;f.id='s'+(base+made).toString(36);feats.push(f);made++;save(f)}}
+  render();status(made?`${made} suggestions added. Select one to accept or discard it.`:'No region is more than 1.5 mm off over 20 mm². Nothing to suggest.')}
+$('b-suggest').onclick=suggest;
+$('b-accept').onclick=()=>{const f=cur();if(!f)return;f.suggested=false;f.source='you';f.label=f.label.replace('Suggested','Accepted');fillEditor();render();save(f)};
+$('b-discard').onclick=()=>{const f=cur();if(f)remove(f)};
 
 // ---------- toolbar ----------
 function press(group,attr,val){document.querySelectorAll(`[data-${attr}]`).forEach(b=>b.setAttribute('aria-pressed',b.dataset[attr]===val))}
