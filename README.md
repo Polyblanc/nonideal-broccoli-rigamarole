@@ -7,7 +7,7 @@ Open a folder's README to see what the tool does and how to use it.
 
 | Folder | What it does | Command |
 |---|---|---|
-| [PROFILE_TRACER](PROFILE_TRACER/) | Photo of a part / PCB / tool → outline as SVG or DXF, with a lasso UI | `profiler` |
+| [PROFILE_TRACER](PROFILE_TRACER/) | Photo of a part / PCB / tool / spring → outline or centerline as SVG or DXF, with click-to-pick, lasso, zoom and two-point scale | `profiler` |
 
 ## One-time setup on your computer
 
