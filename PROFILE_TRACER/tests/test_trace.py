@@ -254,3 +254,28 @@ def test_web_api_roundtrip():
         assert e.value.code == 410
     finally:
         srv.shutdown()
+
+
+def test_thin_strokes_ignore_pencil_shading_and_exclude_strays():
+    t = np.linspace(0.6, 6 * np.pi, 4000)
+    r = 20 + 13 * t
+    truth = np.stack([400 + r * np.cos(t), 400 + r * np.sin(t)], 1)
+
+    def draw(m):
+        cv2.polylines(m, [truth.astype(np.int32)], False, 255, 3, cv2.LINE_AA)
+    img = _wire_photo(draw).astype(np.float32)
+    # broad, soft pencil shading across the coils + a stray hatch stroke
+    yy, xx = np.mgrid[0:800, 0:800]
+    for cx, cy in ((520, 520), (300, 330)):
+        img *= (1 - 0.35 * np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * 70.0 ** 2)))[..., None]
+    img = np.clip(img, 0, 255).astype(np.uint8)
+    cv2.line(img, (40, 760), (160, 700), (60, 60, 60), 2)
+    res = trace(img, TraceParams(shape="centerline", pieces="all", method="lines"))
+    pts = np.concatenate([_dense(p["points"]) for p in res.paths])
+    d = np.sqrt(((pts[:, None] - truth[None, ::4]) ** 2).sum(-1)).min(1)
+    stray = np.hypot(pts[:, 0] - 100, pts[:, 1] - 730) < 80
+    assert np.percentile(d[~stray], 98) < 4                 # shading did not become lines
+    res2 = trace(img, TraceParams(shape="centerline", pieces="all", method="lines", exclude=[[100, 730]]))
+    pts2 = np.concatenate([_dense(p["points"]) for p in res2.paths])
+    assert not (np.hypot(pts2[:, 0] - 100, pts2[:, 1] - 730) < 60).any()   # stray removed
+    assert len(res2.paths) >= 1

@@ -45,6 +45,7 @@ It runs several classic OpenCV segmentations and scores each one, rather than re
 | `edges`   | sharp-edged parts on a uniform background |
 | `grabcut` | textured or cluttered backgrounds, specular highlights |
 | `alpha`   | PNGs that already have a transparent background (used directly) |
+| `lines`   | thin strokes on shaded/smudged paper: ignores broad shading (centerline mode only) |
 | `adaptive`| thin lines under uneven light (centerline mode only) |
 
 Clicks guide every method. A click on the object decides which piece is kept, and the
@@ -77,7 +78,13 @@ Command-line lasso: `--lasso lasso.json` (`[[x,y],...]` in image pixels) or
 `--shape centerline` thins the detected shape down to a 1-pixel skeleton. It then traces
 that skeleton into curves, removes short side-branches (burrs), and joins curves that run
 through a junction. A spiral hairspring comes out as one continuous open curve. The
-summary reports the measured line thickness. For very thin wire, raise
+summary reports the measured line thickness.
+
+Hand drawings and photos often have small breaks in the line, so breaks are bridged when
+both loose ends point at each other. Ends that run side by side, like neighbouring coils,
+are never joined. Where coils crowd together the line can still split into a few curves.
+Use **All pieces** (the browser page switches to it for centerlines), and Shift-click any
+stray stroke to remove just that curve. For very thin wire, raise
 `--work-size` (the **Detail** setting) so the wire stays a few pixels wide.
 
 ## Scale & output
