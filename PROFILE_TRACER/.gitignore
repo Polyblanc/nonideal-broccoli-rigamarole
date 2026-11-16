@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+
+# Outputs you make while trying the tool (keep your own photos out of git)
+*.svg
+*.dxf
+debug*.png
+overlay*.png
