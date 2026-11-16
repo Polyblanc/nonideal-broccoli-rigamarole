@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Profile Tracer</title>
+<style>
+  :root { --bg:#f6f6f4; --panel:#fff; --fg:#1d1d1b; --muted:#6b6b66; --line:#d9d9d4;
+          --accent:#0a7d4f; --lasso:#d6336c; --other:#3b82f6; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161615; --panel:#1f1f1d; --fg:#ececea; --muted:#9a9a94; --line:#33332f;
+            --accent:#3ddc97; --lasso:#ff6b9a; --other:#7aa7ff; }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display:none !important; }
+  body { margin:0; font:14px/1.4 system-ui, sans-serif; background:var(--bg); color:var(--fg);
+         display:grid; grid-template-columns: 300px 1fr; height:100vh; }
+  aside { background:var(--panel); border-right:1px solid var(--line); padding:16px; overflow:auto; }
+  main { position:relative; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+  h1 { font-size:16px; margin:0 0 12px; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:18px 0 6px; }
+  label { display:block; margin:6px 0; }
+  .row { display:flex; gap:6px; flex-wrap:wrap; }
+  button, select, input[type=number] { font:inherit; padding:6px 10px; border:1px solid var(--line);
+         background:var(--bg); color:var(--fg); border-radius:6px; }
+  button.primary { background:var(--accent); color:#fff; border-color:transparent; }
+  button.on { outline:2px solid var(--lasso); }
+  button:disabled { opacity:.5; }
+  input[type=range] { width:100%; }
+  canvas { max-width:100%; max-height:100%; touch-action:none; cursor:crosshair; }
+  #drop { position:absolute; inset:24px; border:2px dashed var(--line); border-radius:12px;
+          display:flex; align-items:center; justify-content:center; color:var(--muted); text-align:center; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  td, th { padding:3px 4px; border-bottom:1px solid var(--line); text-align:left; }
+  tr.sel { background:color-mix(in srgb, var(--accent) 18%, transparent); }
+  tr { cursor:pointer; }
+  .warn { color:#b45309; font-size:12px; margin:4px 0; }
+  .muted { color:var(--muted); font-size:12px; }
+  @media (max-width: 720px) { body { grid-template-columns:1fr; grid-template-rows:auto 60vh; height:auto; }
+    aside { border-right:0; border-bottom:1px solid var(--line); } }
+</style>
+</head>
+<body>
+<aside>
+  <h1>Profile Tracer</h1>
+  <input type="file" id="file" accept="image/*">
+
+  <h2>Lasso (optional)</h2>
+  <div class="row">
+    <button id="drawBtn" title="Drag to draw freehand. Click-click for straight segments.">Draw lasso</button>
+    <button id="clearBtn">Clear</button>
+  </div>
+  <label>Mode
+    <select id="lassoMode">
+      <option value="loose">Loose – object is somewhere inside</option>
+      <option value="tight">Tight – my line is a rough trace, snap it</option>
+    </select>
+  </label>
+  <p class="muted">Drag freehand, or click points; double-click / Enter closes. Esc cancels.</p>
+
+  <h2>Detection</h2>
+  <label>Method
+    <select id="method">
+      <option value="auto">Auto (try all, pick best)</option>
+      <option value="otsu">Otsu threshold</option>
+      <option value="color">Colour vs background</option>
+      <option value="edges">Canny edges</option>
+      <option value="grabcut">GrabCut</option>
+    </select>
+  </label>
+  <label>Smoothing <span id="smoothV"></span><input type="range" id="smooth" min="0" max="6" step="0.25" value="1.5"></label>
+  <label>Min feature (px) <span id="minfV"></span><input type="range" id="minf" min="0" max="20" step="1" value="3"></label>
+  <label>Simplify (px) <span id="epsV"></span><input type="range" id="eps" min="0.1" max="5" step="0.05" value="0.75"></label>
+  <button class="primary" id="runBtn" disabled>Trace</button>
+
+  <h2>Candidates</h2>
+  <table id="cands"><tbody><tr><td class="muted">none yet</td></tr></tbody></table>
+  <div id="warnings"></div>
+
+  <h2>Export</h2>
+  <label>Scale
+    <select id="scaleMode">
+      <option value="px">Pixels (no scale)</option>
+      <option value="width">Outline width is … mm</option>
+      <option value="height">Outline height is … mm</option>
+      <option value="mmpp">mm per pixel</option>
+    </select>
+  </label>
+  <input type="number" id="scaleVal" step="any" placeholder="value" style="width:100%">
+  <div class="row" style="margin-top:8px">
+    <button id="svgBtn" disabled>Download SVG</button>
+    <button id="dxfBtn" disabled>Download DXF</button>
+  </div>
+  <p class="muted" id="status"></p>
+</aside>
+<main>
+  <div id="drop">Drop an image here or use the file picker</div>
+  <canvas id="cv" hidden></canvas>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ctx = cv.getContext('2d');
+let img = null, dataURL = null, lasso = [], drawing = false, dragging = false, result = null, chosen = 0;
+
+for (const [s, v] of [['smooth','smoothV'],['minf','minfV'],['eps','epsV']]) {
+  const upd = () => $(v).textContent = $(s).value; $(s).oninput = upd; upd();
+}
+
+function loadFile(f) {
+  const r = new FileReader();
+  r.onload = () => { dataURL = r.result; img = new Image(); img.onload = () => {
+    cv.width = img.naturalWidth; cv.height = img.naturalHeight; cv.hidden = false; $('drop').hidden = true;
+    lasso = []; result = null; $('runBtn').disabled = false; renderCands(); draw(); }; img.src = dataURL; };
+  r.readAsDataURL(f);
+}
+$('file').onchange = e => e.target.files[0] && loadFile(e.target.files[0]);
+document.body.ondragover = e => e.preventDefault();
+document.body.ondrop = e => { e.preventDefault(); e.dataTransfer.files[0] && loadFile(e.dataTransfer.files[0]); };
+
+function toImg(e) {
+  const r = cv.getBoundingClientRect();
+  return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height];
+}
+const lw = () => Math.max(1.5, Math.max(cv.width, cv.height) / 500);
+
+function path(pts, close) {
+  ctx.beginPath(); pts.forEach(([x,y],i) => i ? ctx.lineTo(x,y) : ctx.moveTo(x,y)); if (close) ctx.closePath();
+}
+function draw(hover) {
+  if (!img) return;
+  ctx.drawImage(img, 0, 0);
+  if (result) {
+    result.candidates.forEach((c, i) => { if (i === chosen || !c.polygon.length) return;
+      ctx.strokeStyle = getComputedStyle(document.body).getPropertyValue('--other'); ctx.lineWidth = lw();
+      ctx.setLineDash([lw()*3, lw()*3]); path(c.polygon, true); ctx.stroke(); });
+    ctx.setLineDash([]);
+    const c = result.candidates[chosen];
+    if (c && c.polygon.length) { ctx.strokeStyle = '#00d26a'; ctx.lineWidth = lw()*2; path(c.polygon, true); ctx.stroke(); }
+  }
+  if (lasso.length) {
+    ctx.setLineDash([]); ctx.strokeStyle = getComputedStyle(document.body).getPropertyValue('--lasso');
+    ctx.lineWidth = lw(); const pts = hover && drawing ? [...lasso, hover] : lasso;
+    path(pts, !drawing); ctx.stroke();
+  }
+}
+
+$('drawBtn').onclick = () => { drawing = !drawing; if (drawing) lasso = []; $('drawBtn').classList.toggle('on', drawing); draw(); };
+$('clearBtn').onclick = () => { lasso = []; drawing = false; $('drawBtn').classList.remove('on'); draw(); };
+function finishLasso() { drawing = false; dragging = false; $('drawBtn').classList.remove('on');
+  if (lasso.length < 3) lasso = []; draw(); }
+
+let strokeStart = 0;
+cv.onpointerdown = e => { if (!drawing) return; cv.setPointerCapture(e.pointerId); dragging = true; strokeStart = lasso.length; lasso.push(toImg(e)); draw(); };
+cv.onpointermove = e => {
+  if (!drawing) return; const p = toImg(e);
+  if (dragging) { const l = lasso[lasso.length-1]; if (!l || Math.hypot(p[0]-l[0], p[1]-l[1]) > lw()*2) lasso.push(p); }
+  draw(p);
+};
+cv.onpointerup = e => { if (!drawing) return;
+  // a long drag = freehand stroke, finished on release; a click = add a vertex and keep going
+  const wasStroke = dragging && lasso.length - strokeStart > 6;
+  dragging = false; if (wasStroke) finishLasso(); };
+cv.ondblclick = () => drawing && finishLasso();
+addEventListener('keydown', e => { if (!drawing) return;
+  if (e.key === 'Enter') finishLasso(); if (e.key === 'Escape') { lasso = []; finishLasso(); } });
+
+async function post(url, body) {
+  const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); return j;
+}
+
+$('runBtn').onclick = async () => {
+  $('status').textContent = 'Tracing…'; $('runBtn').disabled = true;
+  try {
+    result = await post('/api/trace', { image: dataURL, lasso: lasso.length >= 3 ? lasso : null,
+      lasso_mode: $('lassoMode').value, method: $('method').value,
+      smooth: +$('smooth').value, epsilon: +$('eps').value, min_feature: +$('minf').value });
+    chosen = 0; $('status').textContent = `${result.polygon.length} points`;
+  } catch (err) { $('status').textContent = err.message; result = null; }
+  $('runBtn').disabled = false; renderCands(); draw();
+};
+
+function renderCands() {
+  const tb = $('cands').tBodies[0]; tb.innerHTML = '';
+  $('warnings').innerHTML = '';
+  $('svgBtn').disabled = $('dxfBtn').disabled = !result;
+  if (!result) { tb.innerHTML = '<tr><td class="muted">none yet</td></tr>'; return; }
+  tb.insertAdjacentHTML('beforeend', '<tr><th>method</th><th>score</th><th>edge</th><th>agree</th></tr>');
+  result.candidates.forEach((c, i) => {
+    const tr = document.createElement('tr'); if (i === chosen) tr.className = 'sel';
+    const m = c.metrics;
+    tr.innerHTML = `<td>${c.method}</td><td>${c.score.toFixed(2)}</td><td>${(m.edge_strength ?? 0).toFixed(2)}</td><td>${(m.consensus ?? 0).toFixed(2)}</td>`;
+    tr.onclick = () => { if (c.polygon.length) { chosen = i; renderCands(); draw(); } };
+    tb.appendChild(tr);
+  });
+  for (const w of result.warnings) $('warnings').insertAdjacentHTML('beforeend', `<p class="warn">⚠ ${w}</p>`);
+}
+
+async function exportAs(fmt) {
+  const v = parseFloat($('scaleVal').value), mode = $('scaleMode').value, body = { polygon: result.candidates[chosen].polygon, format: fmt };
+  if (mode !== 'px' && !(v > 0)) { $('status').textContent = 'Enter a scale value'; return; }
+  if (mode === 'width') body.width_mm = v; if (mode === 'height') body.height_mm = v; if (mode === 'mmpp') body.mm_per_px = v;
+  try {
+    const r = await post('/api/export', body);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([r.text], { type: fmt === 'svg' ? 'image/svg+xml' : 'application/dxf' }));
+    a.download = `profile.${fmt}`; a.click(); URL.revokeObjectURL(a.href);
+  } catch (err) { $('status').textContent = err.message; }
+}
+$('svgBtn').onclick = () => exportAs('svg');
+$('dxfBtn').onclick = () => exportAs('dxf');
+</script>
+</body>
+</html>
