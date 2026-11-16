@@ -1,0 +1,29 @@
+[project]
+name = "profile-tracer"
+version = "0.1.0"
+description = "Photo of a part/PCB/tool -> best-guess outline profile as SVG or DXF, with a lasso UI"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python-headless>=4.8",
+    "ezdxf>=1.1",
+]
+
+# Typing `profiler` in any terminal runs this, once installed with
+#   uv tool install --editable ./PROFILE_TRACER
+[project.scripts]
+profiler = "profiler.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["profiler"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
