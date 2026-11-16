@@ -118,7 +118,7 @@
       <option value="centerline">Centerline – middle of thin wires, springs, lines</option>
     </select>
   </label>
-  <label>Pieces <span class="tip" tabindex="0" data-tip="Biggest only: keep the single largest object. All pieces: keep every separate object found, e.g. several parts on one sheet. Objects you click with the Pick tool are always kept.">?</span>
+  <label>Pieces <span class="tip" tabindex="0" data-tip="Biggest only: keep the single largest object (in centerline mode, the longest line). All pieces: keep everything found, e.g. several parts on one sheet, or every coil of a spring whose line has breaks. Things you click with the Pick tool are always kept, and Shift-clicking a stray line removes it.">?</span>
     <select id="pieces">
       <option value="largest">Biggest only</option>
       <option value="all">All pieces</option>
@@ -147,6 +147,7 @@
         <option value="color">Colour difference</option>
         <option value="edges">Edge outline</option>
         <option value="grabcut">Smart cut (GrabCut)</option>
+        <option value="lines">Thin strokes (ignores shading)</option>
         <option value="adaptive">Local brightness (thin lines)</option>
       </select>
     </label>
@@ -208,7 +209,7 @@ const S = {
   result:null, chosen:0, busy:false, pending:false,
 };
 const NAMES = { otsu:'Brightness split', color:'Colour difference', edges:'Edge outline',
-  grabcut:'Smart cut', alpha:'Transparency', adaptive:'Local brightness' };
+  grabcut:'Smart cut', alpha:'Transparency', adaptive:'Local brightness', lines:'Thin strokes' };
 const HINTS = {
   pan:  'Drag to move around. Scroll or use the slider to zoom.',
   pick: 'Click on the object. Shift-click or right-click on background, shadows or neighbouring things to exclude them. Click a dot again to remove it.',
@@ -220,6 +221,9 @@ const HINTS = {
 for (const [s, v] of [['smooth','smoothV'],['minf','minfV'],['eps','epsV']]) {
   const upd = () => $(v).textContent = $(s).value; $(s).addEventListener('input', upd); upd();
 }
+// Thin lines often break into several curves (crowded coils, doubled strokes),
+// so keep them all by default; Shift-click strays to drop them.
+$('shape').addEventListener('change', () => { $('pieces').value = $('shape').value === 'centerline' ? 'all' : 'largest'; });
 for (const id of ['shape','pieces','detail','smooth','minf','eps','method','lassoMode','snapPx'])
   $(id).addEventListener('change', () => autoTrace());
 $('showOthers').onchange = draw;
@@ -472,7 +476,7 @@ async function runTrace() {
     shape:$('shape').value, pieces:$('pieces').value, method:$('method').value,
     work_size:+$('detail').value, smooth:+$('smooth').value, epsilon:+$('eps').value,
     min_feature:+$('minf').value, snap_px: $('snapPx').value || null };
-  if (body.method === 'adaptive' && body.shape !== 'centerline') body.method = 'auto';
+  if (['adaptive','lines'].includes(body.method) && body.shape !== 'centerline') body.method = 'auto';
   try {
     S.result = await withImage(() => post('/api/trace', body)); S.chosen = 0; setStatus('');
   } catch (e) { setStatus(e.message); }

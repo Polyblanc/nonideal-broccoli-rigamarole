@@ -31,7 +31,7 @@ import cv2
 import numpy as np
 
 METHODS = ("otsu", "color", "edges", "grabcut")
-THIN_METHODS = ("otsu", "color", "adaptive")   # used for centerlines
+THIN_METHODS = ("lines", "otsu", "adaptive")   # used for centerlines
 LASSO_MODES = ("loose", "tight")
 SHAPES = ("outline", "centerline")
 PIECES = ("largest", "all")
@@ -269,6 +269,29 @@ def _cand_adaptive(gray, bg, includes, invert):
     mode = cv2.THRESH_BINARY_INV if inv else cv2.THRESH_BINARY
     c = 8 if inv else -8          # require a real contrast step, not noise
     return cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, mode, max(3, block), c)
+
+
+def _cand_lines(gray, bg, includes, invert):
+    """Thin-stroke detector. A morphological black-hat (closing minus image)
+    responds to dark strokes narrower than the kernel and ignores broad,
+    soft areas such as pencil shading, smudges and uneven light. Hysteresis
+    keeps faint stretches only where they connect to clearly strong line."""
+    h, w = gray.shape
+    k = max(7, int(0.006 * max(h, w))) | 1
+    blur = cv2.GaussianBlur(gray, (0, 0), 0.8)
+    _, glob = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    dark = _polarity(glob, bg, includes) if invert is None else invert
+    se = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    resp = cv2.morphologyEx(blur, cv2.MORPH_BLACKHAT if dark else cv2.MORPH_TOPHAT, se)
+    t, _ = cv2.threshold(resp, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    t = max(float(t), 8.0)
+    weak = (resp >= t).astype(np.uint8)
+    strong = resp >= max(1.8 * t, float(np.percentile(resp, 99)))
+    n, labels = cv2.connectedComponents(weak, connectivity=8)
+    good = np.zeros(n, bool)
+    good[np.unique(labels[strong])] = True
+    good[0] = False
+    return good[labels].astype(np.uint8) * 255
 
 
 def _cand_color(lab, bg):
@@ -715,6 +738,33 @@ def _prune_and_merge(paths, cl_labels, sk_deg1, prune_len):
             edges = [e for t, e in enumerate(edges) if t not in (i, j)] + [[merged, closed]]
             changed = True
             break
+    # At real junctions (3+ edges, e.g. a pencil stroke crossing the wire), join
+    # the two edges that continue most straight through it; leave the others.
+    changed = True
+    while changed:
+        changed = False
+        for c, k in degree().items():
+            if k < 3:
+                continue
+            idx = [(i, cl(p[0]) == c) for i, (p, cl_) in enumerate(edges)
+                   if not cl_ and c in (cl(p[0]), cl(p[-1]))]
+            best = None
+            for x in range(len(idx)):
+                for y in range(x + 1, len(idx)):
+                    (i, si), (j, sj) = idx[x], idx[y]
+                    if i == j:
+                        continue
+                    dot = float(_end_dir(edges[i][0], si) @ _end_dir(edges[j][0], sj))
+                    if dot < -0.7 and (best is None or dot < best[0]):
+                        best = (dot, i, si, j, sj)
+            if best:
+                _, i, si, j, sj = best
+                p = edges[i][0][::-1] if si else edges[i][0]      # p ends at the cluster
+                q = edges[j][0] if sj else edges[j][0][::-1]      # q starts at the cluster
+                merged = p + _link(p[-1], q[0]) + q[1:] if p[-1] != q[0] else p + q[1:]
+                edges = [e for t, e in enumerate(edges) if t not in (i, j)] + [[merged, False]]
+                changed = True
+                break
     # A single edge that starts and ends in the same cluster is a loop
     for e in edges:
         if not e[1] and cl(e[0][0]) and cl(e[0][0]) == cl(e[0][-1]) and len(e[0]) > 3:
@@ -722,7 +772,104 @@ def _prune_and_merge(paths, cl_labels, sk_deg1, prune_len):
     return edges
 
 
-def _mask_to_centerlines(mask, scale, smooth, epsilon, prune_len):
+def _end_dir(path, at_start, k=8):
+    """Unit vector pointing OUT of a pixel path at one of its ends (x, y)."""
+    if len(path) < 2:
+        return np.zeros(2)
+    a = path[0] if at_start else path[-1]
+    b = path[min(k, len(path) - 1)] if at_start else path[max(0, len(path) - 1 - k)]
+    v = np.array([a[1] - b[1], a[0] - b[0]], float)
+    n = np.hypot(*v)
+    return v / n if n else v
+
+
+def _link(p, q):
+    """Pixels on a straight line from p to q (exclusive of p), (y, x) tuples."""
+    n = int(max(abs(q[0] - p[0]), abs(q[1] - p[1])))
+    return [(int(round(p[0] + (q[0] - p[0]) * t / n)), int(round(p[1] + (q[1] - p[1]) * t / n)))
+            for t in range(1, n + 1)] if n else []
+
+
+def _join_gaps(edges, gap, cos_min=0.7, far_gap=0.0, lw=2.0):
+    """Bridge breaks in a line: connect two open ends that point at each other
+    (so neighbouring coils of a spring, which run side by side, are never
+    cross-connected). Two tiers:
+      - short breaks (<= gap) with loosely matching directions;
+      - longer breaks (<= far_gap) only when both ends point almost straight
+        at each other with very little sideways offset."""
+    open_ = [e for e in edges if not e[1] and len(e[0]) >= 2]
+    rest = [e for e in edges if e[1] or len(e[0]) < 2]
+    n = len(open_)
+    if n < 2:
+        return edges
+    ends = []  # (path index, at_start, point yx, outward dir xy)
+    for i, (path, _) in enumerate(open_):
+        for at_start in (True, False):
+            ends.append((i, at_start, path[0] if at_start else path[-1], _end_dir(path, at_start)))
+    P = np.array([[e[2][1], e[2][0]] for e in ends], float)
+    D = np.array([e[3] for e in ends])
+    diff = P[None, :, :] - P[:, None, :]                      # from end a to end b
+    dist = np.hypot(diff[..., 0], diff[..., 1])
+    with np.errstate(invalid="ignore", divide="ignore"):
+        u = diff / dist[..., None]
+    ca = np.einsum("abk,ak->ab", u, D)                        # a points toward b
+    cb = np.einsum("abk,bk->ab", -u, D)                       # b points toward a
+    owner = np.array([e[0] for e in ends])
+    lateral = np.abs(diff[..., 0] * D[:, None, 1] - diff[..., 1] * D[:, None, 0])
+    near = (dist <= gap) & (ca >= cos_min) & (cb >= cos_min)
+    far = (dist <= far_gap) & (ca >= 0.9) & (cb >= 0.9) & (lateral <= np.maximum(3 * lw, 0.12 * dist))
+    ok = (near | far) & (dist > 0) & (owner[:, None] != owner[None, :])
+    a_idx, b_idx = np.nonzero(np.triu(ok))
+    order = np.argsort(dist[a_idx, b_idx] * (2.5 - ca[a_idx, b_idx] - cb[a_idx, b_idx]))
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    link = {}
+    for t in order:
+        a, b = int(a_idx[t]), int(b_idx[t])
+        if a in link or b in link:
+            continue
+        ra, rb = find(owner[a]), find(owner[b])
+        if ra == rb:
+            continue
+        parent[ra] = rb
+        link[a], link[b] = b, a
+    if not link:
+        return edges
+    # Walk each chain of linked paths from a free end
+    used = [False] * n
+    chains = []
+    for start_end in range(len(ends)):
+        i = owner[start_end]
+        if used[i] or start_end in link:
+            continue
+        pix, e = [], start_end
+        while True:
+            i = owner[e]
+            used[i] = True
+            path = open_[i][0] if ends[e][1] else open_[i][0][::-1]   # walk away from end e
+            if pix:
+                pix += _link(pix[-1], path[0])
+            pix += list(path)
+            far = e + 1 if ends[e][1] else e - 1                       # the path's other end
+            if far not in link:
+                break
+            e = link[far]
+        chains.append([pix, False])
+    return rest + chains + [open_[i] for i in range(n) if not used[i]]
+
+
+def _path_len(path):
+    a = np.asarray(path, float)
+    return float(np.hypot(*np.diff(a, axis=0).T).sum()) if len(a) > 1 else 0.0
+
+
+def _mask_to_centerlines(mask, scale, smooth, epsilon, prune_len, includes=(), excludes=(),
+                         pieces="all"):
     sk = thin(mask)
     if not sk.any():
         return [], {}
@@ -734,6 +881,35 @@ def _mask_to_centerlines(mask, scale, smooth, epsilon, prune_len):
     deg1 = sk & (deg == 1)
     paths, cl_labels = _skeleton_graph(sk)
     edges = _prune_and_merge(paths, cl_labels, deg1, prune_len)
+
+    dist = cv2.distanceTransform((mask > 0).astype(np.uint8), cv2.DIST_L2, 5)
+    widths = 2 * dist[sk]
+    lw = float(np.median(widths)) if len(widths) else 2.0
+    edges = _join_gaps(edges, gap=max(8.0, 5 * lw), far_gap=0.05 * max(mask.shape), lw=lw)
+
+    # Which curves to keep: drop those near a background click; then those
+    # near an object click, else the longest, else all
+    reach = 0.02 * max(mask.shape)
+
+    def gap_to(path, x, y):
+        a = np.asarray(path, float)
+        return float(np.min(np.hypot(a[:, 1] - x, a[:, 0] - y)))
+
+    def near(path, pts):
+        return any(gap_to(path, x, y) <= reach for x, y in pts)
+    # A background click removes only the single closest curve, so clicking a
+    # stray stroke beside a coil doesn't also delete the coil.
+    for x, y in excludes:
+        if edges:
+            d = [gap_to(e[0], x, y) for e in edges]
+            i = int(np.argmin(d))
+            if d[i] <= reach:
+                edges = edges[:i] + edges[i + 1:]
+    if includes:
+        picked = [e for e in edges if near(e[0], includes)]
+        edges = picked or edges
+    elif pieces == "largest" and edges:
+        edges = [max(edges, key=lambda e: _path_len(e[0]))]
 
     out = []
     for path, closed in sorted(edges, key=lambda e: -len(e[0])):
@@ -749,10 +925,7 @@ def _mask_to_centerlines(mask, scale, smooth, epsilon, prune_len):
             continue
         out.append({"points": np.round(simp, 3).tolist(), "closed": bool(closed)})
 
-    dist = cv2.distanceTransform((mask > 0).astype(np.uint8), cv2.DIST_L2, 5)
-    widths = 2 * dist[sk]
-    info = {"line_width_px": round(float(np.median(widths)) / scale, 2) if len(widths) else 0.0,
-            "line_width_work_px": round(float(np.median(widths)), 2) if len(widths) else 0.0}
+    info = {"line_width_px": round(lw / scale, 2), "line_width_work_px": round(lw, 2)}
     return out, info
 
 
@@ -871,6 +1044,8 @@ def trace(image, params: TraceParams | None = None, *, return_masks=False):
             raw[name] = _cand_edges(gray, grad)
         elif name == "grabcut":
             raw[name] = _cand_grabcut(work, lasso_mask, tight_masks, includes, excludes)
+        elif name == "lines":
+            raw[name] = _cand_lines(gray, bg, includes, p.invert)
         elif name == "adaptive":
             raw[name] = _cand_adaptive(gray, bg, includes, p.invert)
         elif name != "alpha":
@@ -885,7 +1060,7 @@ def trace(image, params: TraceParams | None = None, *, return_masks=False):
         elif lasso_mask is not None:
             m = cv2.bitwise_and(m, lasso_mask)
         if thin_mode:
-            masks[name] = _clean_thin(m, p.min_feature, includes, excludes, p.pieces)
+            masks[name] = _clean_thin(m, p.min_feature, [], [], "all")
         else:
             masks[name] = _clean(m, p.min_feature, includes, excludes, p.pieces)
 
@@ -895,14 +1070,17 @@ def trace(image, params: TraceParams | None = None, *, return_masks=False):
     for name in names:
         others = [masks[o] for o in names if o != name and masks[o].any()]
         consensus = float(np.mean([_iou(masks[name], o) for o in others])) if others else 0.5
-        met = _metrics(masks[name], grad, lasso_mask, includes, excludes)
+        # In centerline mode clicks act on traced curves, not on the pixel mask
+        met = _metrics(masks[name], grad, lasso_mask, includes, [] if thin_mode else excludes)
         met["consensus"] = consensus
         sc = 1.0 if name == "alpha" else _score(met, consensus, p.lasso_mode, thin_mode)
         paths: list[dict] = []
         if masks[name].any():
             if thin_mode:
                 prune = max(10.0, 3 * p.min_feature)
-                paths, info = _mask_to_centerlines(masks[name], scale, p.smooth, p.epsilon, prune)
+                paths, info = _mask_to_centerlines(masks[name], scale, p.smooth, p.epsilon, prune,
+                                                   includes=includes, excludes=excludes,
+                                                   pieces=p.pieces)
                 infos[name] = info
             else:
                 paths = _mask_to_outlines(masks[name], scale, p.smooth, p.epsilon)
