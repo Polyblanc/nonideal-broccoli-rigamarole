@@ -8,6 +8,7 @@ Open a folder's README to see what the tool does and how to use it.
 | Folder | What it does | Command |
 |---|---|---|
 | [PROFILE_TRACER](PROFILE_TRACER/) | Photo of a part / PCB / tool / spring → outline or centerline as SVG or DXF, with click-to-pick, lasso, zoom and two-point scale | `profiler` |
+| [VIDEO_SPLAT](VIDEO_SPLAT/) | Single-camera video → per-frame 3D Gaussian splats (SHARP) rendered with gsplat. Needs an NVIDIA GPU for rendering | `video-splat` |
 
 ## One-time setup on your computer
 
