@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+
+# Outputs you make while trying the tool (frames and splats are huge, keep them out of git)
+splat_out/
+out/
+*.ply
+*.mp4

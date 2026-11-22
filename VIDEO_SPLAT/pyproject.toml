@@ -1,0 +1,33 @@
+[project]
+name = "video-splat"
+version = "0.1.0"
+description = "Single-camera video -> per-frame 3D Gaussian splats (SHARP) rendered with gsplat"
+readme = "README.md"
+requires-python = ">=3.10"
+# Frame extraction needs nothing but ffmpeg. The model and renderer (torch, gsplat, SHARP) are the
+# optional "sharp" extra because they are large and rendering needs an NVIDIA GPU.
+dependencies = []
+
+[project.optional-dependencies]
+sharp = ["sharp @ git+https://github.com/apple/ml-sharp"]
+
+# Typing `video-splat` in any terminal runs this, once installed with
+#   uv tool install --editable "./VIDEO_SPLAT[sharp]"
+[project.scripts]
+video-splat = "video_splat.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["video_splat"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
